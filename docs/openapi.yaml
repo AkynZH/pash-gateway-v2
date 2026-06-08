@@ -1,0 +1,83 @@
+openapi: 3.0.3
+info:
+  title: PASH Gateway API
+  description: API для генерации UI-компонентов с поддержкой Governance, Replay и Webhooks.
+  version: 2.0.0
+servers:
+  - url: http://localhost:3000/v1
+    description: Local development server
+paths:
+  /presentation/replay/{id}:
+    get:
+      summary: Time Travel Replay
+      description: Воссоздает дерево состояний (Component Tree) на указанном историческом шаге для отладки или аудита.
+      operationId: getPresentationReplay
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Идентификатор сессии (sessionId)
+        - name: targetStep
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 0
+          description: Целевой шаг (версия) дерева состояний для восстановления
+      responses:
+        '200':
+          description: Успешное восстановление состояния
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessionId:
+                    type: string
+                  targetStep:
+                    type: integer
+                  state:
+                    type: object
+                    description: Восстановленный снимок Component Tree на целевом шаге
+                  metadata:
+                    type: object
+                    properties:
+                      totalSteps:
+                        type: integer
+                      replayDurationMs:
+                        type: integer
+        '404':
+          description: Сессия или целевой шаг не найдены
+        '500':
+          description: Внутренняя ошибка сервера при восстановлении состояния
+components:
+  schemas:
+    WebhookPayload:
+      type: object
+      description: Структура полезной нагрузки для системных Webhook-уведомлений
+      properties:
+        event:
+          type: string
+          enum: [pash.error, pash.limit.exceeded, pash.provider.failover]
+          description: Тип системного события
+        sessionId:
+          type: string
+          description: Идентификатор сессии, в которой произошло событие
+        timestamp:
+          type: string
+          format: date-time
+          description: Время возникновения события
+        details:
+          type: object
+          description: Дополнительные данные, зависящие от типа события
+          additionalProperties: true
+      example:
+        event: pash.provider.failover
+        sessionId: "sess_12345"
+        timestamp: "2024-06-05T10:00:00Z"
+        details:
+          fromProvider: "openrouter"
+          toProvider: "openai"
+          reason: "Circuit breaker OPEN"
