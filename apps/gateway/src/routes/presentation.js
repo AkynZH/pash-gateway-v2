@@ -36,6 +36,7 @@ async function presentationRoute(fastify, opts) {
         type: 'object',
         properties: {
           schemas: { type: 'array', default: [] },
+          webhookUrl: { type: 'string', format: 'uri' }, // Stage 5: Async task callbacks
           resume:  {
             type: 'object',
             properties: {
@@ -48,7 +49,7 @@ async function presentationRoute(fastify, opts) {
     },
   }, async (request, reply) => {
     const { orgId, apiKeyId = 'unknown' } = request.pashContext;
-    const { schemas = [], resume }        = request.body;
+    const { schemas = [], webhookUrl, resume } = request.body;
 
     // ── Resume existing session ────────────────────────────────────────────
     if (resume?.sessionId) {
@@ -78,6 +79,7 @@ async function presentationRoute(fastify, opts) {
       apiKeyId,
       clientSchemas: schemas,
       baseSchemas,
+      webhookUrl,
     });
 
     return reply.send({

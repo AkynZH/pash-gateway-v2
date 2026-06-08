@@ -44,9 +44,10 @@ class SessionManager {
    * @param {string} opts.apiKeyId
    * @param {Object[]} opts.clientSchemas   - from /v1/presentation/init
    * @param {SchemaResolver} opts.baseSchemas - server-side base schemas
+   * @param {string} [opts.webhookUrl]      - optional callback for async events (Stage 5)
    * @returns {Session}
    */
-  create({ orgId, apiKeyId, clientSchemas = [], baseSchemas = null }) {
+  create({ orgId, apiKeyId, clientSchemas = [], baseSchemas = null, webhookUrl = null }) {
     const sessionId = generateSessionId();
     const resolver  = baseSchemas ?? new SchemaResolver();
     const { negotiated, warnings } = resolver.negotiateCapabilities(clientSchemas);
@@ -55,6 +56,7 @@ class SessionManager {
       id:          sessionId,
       orgId,
       apiKeyId,
+      webhookUrl,
       createdAt:   Date.now(),
       lastActiveAt: Date.now(),
       tree:        new ComponentTree(),
@@ -81,7 +83,7 @@ class SessionManager {
   }
 
   /**
-   * Close a session: flush line count to Redis and persist final snapshot.
+   * Close a session: flush line count to Redis, persist final snapshot, and trigger webhook.
    */
   async close(sessionId) {
     const session = this._sessions.get(sessionId);
@@ -96,8 +98,46 @@ class SessionManager {
       await this._lineCounter.increment(session.orgId, session.lineCount);
     }
 
+    // Stage 5: Trigger webhook if configured
+    if (session.webhookUrl) {
+      this._triggerWebhook(session.webhookUrl, {
+        event: 'session.closed',
+        sessionId,
+        orgId: session.orgId,
+        stats: {
+          linesGenerated: session.lineCount,
+          tokensSaved: session.tokensSaved,
+          finalTreeSize: snapshot.size,
+        },
+        snapshotHash: snapshot.hash,
+      }).catch(err => {
+        // Log error but do not fail the close operation
+        console.error(`[SessionManager] Webhook failed for ${sessionId}:`, err.message);
+      });
+    }
+
     this._sessions.delete(sessionId);
     return { linesGenerated: session.lineCount, finalSnapshot: snapshot };
+  }
+
+  /**
+   * Fire-and-forget webhook delivery.
+   */
+  async _triggerWebhook(url, payload) {
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(5000), // 5s timeout
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+    } catch (err) {
+      // Re-throw to be caught by the caller's .catch()
+      throw new Error(`Webhook delivery failed: ${err.message}`);
+    }
   }
 
   // ─── Resume (Reconnect) ────────────────────────────────────────────────────
