@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 'use strict';
 
+const path = require('path');
+require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
+
 const fs   = require('fs');
 const path = require('path');
 const { Client } = require('pg');
