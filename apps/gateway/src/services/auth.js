@@ -61,6 +61,7 @@ class AuthService {
         valid:     true,
         orgId:     'org_test',
         plan:      'free',
+        tier:      'community', // community, startup, pro
         lineLimit: 300_000,
         env:       'test',
         governance: {
@@ -90,6 +91,7 @@ class AuthService {
         valid:     true,
         orgId:     r.org_id,
         plan:      r.plan,
+        tier:      r.tier || 'community',
         lineLimit: r.line_limit,
         env:       r.env,
         governance: r.governance || {},

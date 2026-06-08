@@ -5,6 +5,10 @@ const { PromptInjector }        = require('../services/prompt-injector');
 const { StreamGuard, BillingCounter } = require('@pash/billing');
 const { getRedis }              = require('../services/redis');
 const { dispatcher: webhookDispatcher } = require('../services/webhook');
+const { 
+  preRequestLocLimit, 
+  createLocTrackingStream 
+} = require('../middleware/loc-limiter');
 const config                    = require('../config');
 
 /**
@@ -26,6 +30,7 @@ async function completionsRoute(fastify, opts) {
 
   fastify.post('/v1/chat/completions', {
     config: { requireAuth: true },
+    preHandler: [preRequestLocLimit],
     schema: {
       body: {
         type: 'object',
@@ -128,20 +133,39 @@ async function handleStream(request, reply, opts) {
     }
 
     const utf8   = new TextDecoder();
-    const reader = response.body.getReader();
+    
+    // Integrating LoC tracking stream
+    const locTracker = createLocTrackingStream(request);
+    const transformedReader = response.body.pipeThrough(locTracker).getReader();
 
     while (true) {
       let chunk;
       try {
-        const res = await reader.read();
+        const res = await transformedReader.read();
         if (res.done) break;
         chunk = res.value;
       } catch (err) {
-        if (abortController.signal.aborted) break; // client disconnected
+        if (abortController.signal.aborted) break; // client disconnected or limit reached
         throw err;
       }
 
       const text   = typeof chunk === 'string' ? chunk : utf8.decode(chunk, { stream: true });
+      
+      // Check if the chunk contains our limit-exceeded marker
+      if (text.includes('!error|reason=community_limit_exceeded')) {
+        reply.raw.write(text);
+        reply.raw.write('data: [DONE]\n\n');
+        abortController.abort('limit_exceeded');
+        
+        if (webhookUrl) {
+          webhookDispatcher.dispatch(orgId, 'pash.limit.exceeded', {
+            linesUsed: guard.totalSession,
+            limit: lineLimit,
+          });
+        }
+        break;
+      }
+
       const result = guard.push(text);
 
       // FIX (audit #11): Mid-stream limit enforcement — structured error event
@@ -151,7 +175,7 @@ async function handleStream(request, reply, opts) {
         }
         reply.raw.write('data: [DONE]\n\n');
         abortController.abort('limit_exceeded');
-        
+
         // Dispatch systemic webhook for limit exceeded
         if (webhookUrl) {
           webhookDispatcher.dispatch(orgId, 'pash.limit.exceeded', {
