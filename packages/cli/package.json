@@ -1,0 +1,20 @@
+{
+  "name": "@pash/cli",
+  "version": "1.0.0",
+  "description": "PASH GitOps CLI for schema validation and LLM consistency testing",
+  "main": "src/index.js",
+  "bin": {
+    "pash": "./bin/pash.js"
+  },
+  "scripts": {
+    "test": "jest"
+  },
+  "dependencies": {
+    "commander": "^11.0.0",
+    "chalk": "^4.1.2",
+    "diff": "^5.1.0"
+  },
+  "devDependencies": {
+    "jest": "^29.0.0"
+  }
+}

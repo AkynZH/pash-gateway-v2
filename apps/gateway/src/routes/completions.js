@@ -4,6 +4,7 @@ const { UpstreamClient }        = require('../services/upstream');
 const { PromptInjector }        = require('../services/prompt-injector');
 const { StreamGuard, BillingCounter } = require('@pash/billing');
 const { getRedis }              = require('../services/redis');
+const { dispatcher: webhookDispatcher } = require('../services/webhook');
 const config                    = require('../config');
 
 /**
@@ -39,7 +40,7 @@ async function completionsRoute(fastify, opts) {
       },
     },
   }, async (request, reply) => {
-    const { orgId, providerKey, lineLimit, linesUsed } = request.pashContext;
+    const { orgId, providerKey, lineLimit, linesUsed, governance = {}, webhookUrl } = request.pashContext;
     const body    = request.body;
     const model   = body.model ?? 'openai/gpt-4o';
     const isStream = body.stream !== false; // default: streaming
@@ -51,16 +52,19 @@ async function completionsRoute(fastify, opts) {
     // ── Determine provider from model name ───────────────────────────────────
     const providerName = detectProviderName(model);
 
+    // Governance: hard limit for max lines per session/stream (prevents infinite generation)
+    const effectiveLimit = governance.maxLines ? Math.min(lineLimit, governance.maxLines) : lineLimit;
+
     if (isStream) {
       return handleStream(request, reply, {
         upstreamBody, providerKey, providerName, model,
-        orgId, lineLimit, linesUsed, counter,
-        circuitBreaker, injector,
+        orgId, lineLimit: effectiveLimit, linesUsed, counter,
+        circuitBreaker, injector, governance, webhookUrl,
       });
     } else {
       return handleSync(request, reply, {
         upstreamBody, providerKey, providerName,
-        orgId, counter,
+        orgId, counter, governance, webhookUrl,
         circuitBreaker, injector,
       });
     }
@@ -71,7 +75,7 @@ async function completionsRoute(fastify, opts) {
 
 async function handleStream(request, reply, opts) {
   const { upstreamBody, providerKey, providerName, orgId,
-          lineLimit, linesUsed, counter, circuitBreaker, injector } = opts;
+          lineLimit, linesUsed, counter, circuitBreaker, injector, governance, webhookUrl } = opts;
 
   // FIX (audit #10): AbortController for client disconnect
   const abortController = new AbortController();
@@ -96,6 +100,7 @@ async function handleStream(request, reply, opts) {
 
   let currentProvider = providerName;
   let currentBody     = { ...upstreamBody };
+  let didFailover     = false;
 
   try {
     // FIX (audit #4 / CB): On failover, re-inject PASH prompt for new provider
@@ -106,12 +111,21 @@ async function handleStream(request, reply, opts) {
         return client.fetchStream(currentBody, abortController.signal);
       },
       (newProvider) => {
+        didFailover = true;
         // Re-inject PASH prompt for the new provider
         request.log.warn({ msg: 'Failover: re-injecting PASH prompt', provider: newProvider });
         const reinjected   = injector.inject(upstreamBody.messages, newProvider);
         currentBody        = { ...upstreamBody, messages: reinjected };
       }
     );
+
+    // Dispatch systemic webhook for failover
+    if (didFailover && webhookUrl) {
+      webhookDispatcher.dispatch(orgId, 'pash.provider.failover', {
+        fromProvider: providerName,
+        toProvider: currentProvider,
+      });
+    }
 
     const utf8   = new TextDecoder();
     const reader = response.body.getReader();
@@ -137,6 +151,14 @@ async function handleStream(request, reply, opts) {
         }
         reply.raw.write('data: [DONE]\n\n');
         abortController.abort('limit_exceeded');
+        
+        // Dispatch systemic webhook for limit exceeded
+        if (webhookUrl) {
+          webhookDispatcher.dispatch(orgId, 'pash.limit.exceeded', {
+            linesUsed: guard.totalSession,
+            limit: lineLimit,
+          });
+        }
         break;
       }
 
@@ -167,6 +189,15 @@ async function handleStream(request, reply, opts) {
         // Already streaming — send error event
         reply.raw.write(`data: ${JSON.stringify({ error: 'STREAM_ERROR', message: err.message })}\n\n`);
         reply.raw.write('data: [DONE]\n\n');
+        
+        // Dispatch systemic webhook for error
+        if (webhookUrl) {
+          webhookDispatcher.dispatch(orgId, 'pash.error', {
+            type: 'stream_error',
+            provider: currentProvider,
+            message: err.message,
+          });
+        }
       }
     }
   } finally {

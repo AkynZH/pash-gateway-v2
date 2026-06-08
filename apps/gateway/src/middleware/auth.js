@@ -3,6 +3,7 @@
 const { AuthService } = require('../services/auth');
 const { BillingCounter } = require('@pash/billing');
 const { getRedis }    = require('../services/redis');
+const { dispatcher: webhookDispatcher } = require('../services/webhook');
 const config          = require('../config');
 
 /**
@@ -68,14 +69,21 @@ function buildAuthMiddleware(db) {
     }
 
     // ── Attach to request ────────────────────────────────────────────────────
+    if (org.webhookUrl) {
+      webhookDispatcher.register(org.orgId, org.webhookUrl);
+    }
+
     request.pashContext = {
       orgId:            org.orgId,
       plan:             org.plan,
+      env:              org.env,
       lineLimit:        org.lineLimit,
       linesUsed:        limitCheck.current,
       linesRemaining:   limitCheck.remaining,
       providerKey:      effectiveProviderKey,  // FIX: stored in context, not re-read from headers
       isByok:           !!providerKey,
+      governance:       org.governance || {},
+      webhookUrl:       org.webhookUrl,
     };
   };
 }

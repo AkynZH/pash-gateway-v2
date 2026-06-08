@@ -27,13 +27,18 @@ const securityPipeline = new SecurityPipeline({ strictMode: true });
  *   tree.snapshot(); // → { hash, ts, nodes: [...] }
  */
 class ComponentTree {
-  constructor() {
+  constructor(governance = {}) {
     /** @type {Map<string, NodeData>} */
     this._nodes    = new Map();
     /** @type {Map<string, Set<string>>} */
     this._children = new Map();
     /** Monotonic sequence for ordering */
     this._seq      = 0;
+    /** Governance rules */
+    this._governance = {
+      allowedComponents: governance.allowedComponents || null,
+      blockedComponents: new Set(governance.blockedComponents || []),
+    };
   }
 
   // ─── Queries ───────────────────────────────────────────────────────────────
@@ -67,7 +72,7 @@ class ComponentTree {
 
   /**
    * Mount a component into the tree.
-   * @returns {{ ok: boolean, error?: string }}
+   * @returns {{ ok: boolean, error?: string, reason?: string }}
    */
   mount({ id, component, fields, parent = null, namedParams = {} }) {
     if (this._nodes.has(id)) {
@@ -75,6 +80,14 @@ class ComponentTree {
     }
     if (parent && !this._nodes.has(parent)) {
       return { ok: false, error: `Parent "${parent}" not found` };
+    }
+
+    // Governance check: Component Blacklist/Whitelist
+    if (this._governance.blockedComponents.has(component)) {
+      return { ok: false, error: 'Governance block', reason: `Component "${component}" is blocked by governance policy` };
+    }
+    if (this._governance.allowedComponents && !this._governance.allowedComponents.includes(component)) {
+      return { ok: false, error: 'Governance block', reason: `Component "${component}" is not in the allowed list` };
     }
 
     // Security check: inspect all fields for XSS and secrets
@@ -165,6 +178,16 @@ class ComponentTree {
             namedParams: op.namedParams ?? {},
           });
           if (result.ok) obsMetrics.pashOpsTotal.inc({ operation: 'mount', component: op.component });
+          
+          if (!result.ok && result.reason) {
+            // Governance or security block
+            obsMetrics.pashSecurityBlocksTotal.inc({ reason: 'governance_block' });
+            return {
+              ...result,
+              errorLine: `!error|id=${op.id}|component=${op.component}|reason=governance_violation|${result.reason}`
+            };
+          }
+
           return {
             ...result,
             errorLine: result.ok ? null

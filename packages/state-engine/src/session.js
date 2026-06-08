@@ -22,14 +22,16 @@ const crypto             = require('crypto');
 class SessionManager {
   /**
    * @param {Object} opts
-   * @param {Object} opts.snapshotStore  - { save(sessionId, snapshot), load(sessionId) }
-   * @param {Object} opts.lineCounter    - { increment(orgId, count) } async
-   * @param {number} opts.snapshotTtlMs  - snapshot TTL in ms (default: 30 minutes)
+   * @param {Object} opts.snapshotStore       - { save(sessionId, snapshot), load(sessionId) }
+   * @param {Object} opts.observabilityStore  - { append(sessionId, entry), getLogs(sessionId) }
+   * @param {Object} opts.lineCounter         - { increment(orgId, count) } async
+   * @param {number} opts.snapshotTtlMs       - snapshot TTL in ms (default: 30 minutes)
    */
   constructor(opts = {}) {
-    this._snapshotStore = opts.snapshotStore   ?? memoryStore();
-    this._lineCounter   = opts.lineCounter      ?? noopCounter();
-    this._snapshotTtl   = opts.snapshotTtlMs   ?? 30 * 60 * 1000;
+    this._snapshotStore = opts.snapshotStore       ?? memoryStore();
+    this._obsStore      = opts.observabilityStore  ?? memoryObsStore();
+    this._lineCounter   = opts.lineCounter         ?? noopCounter();
+    this._snapshotTtl   = opts.snapshotTtlMs       ?? 30 * 60 * 1000;
 
     /** Fast in-process index: sessionId → SessionMeta */
     this._sessions = new Map();
@@ -42,12 +44,14 @@ class SessionManager {
    * @param {Object} opts
    * @param {string} opts.orgId
    * @param {string} opts.apiKeyId
+   * @param {string} [opts.env]      - 'dev', 'staging', 'prod'
    * @param {Object[]} opts.clientSchemas   - from /v1/presentation/init
    * @param {SchemaResolver} opts.baseSchemas - server-side base schemas
    * @param {string} [opts.webhookUrl]      - optional callback for async events (Stage 5)
+   * @param {Object} [opts.governance]      - { maxLines, allowedComponents, blockedComponents }
    * @returns {Session}
    */
-  create({ orgId, apiKeyId, clientSchemas = [], baseSchemas = null, webhookUrl = null }) {
+  create({ orgId, apiKeyId, env = 'prod', clientSchemas = [], baseSchemas = null, webhookUrl = null, governance = {} }) {
     const sessionId = generateSessionId();
     const resolver  = baseSchemas ?? new SchemaResolver();
     const { negotiated, warnings } = resolver.negotiateCapabilities(clientSchemas);
@@ -56,10 +60,12 @@ class SessionManager {
       id:          sessionId,
       orgId,
       apiKeyId,
+      env,
       webhookUrl,
+      governance:  governance || {},
       createdAt:   Date.now(),
       lastActiveAt: Date.now(),
-      tree:        new ComponentTree(),
+      tree:        new ComponentTree(governance),
       resolver,
       negotiated,
       capWarnings: warnings,
@@ -245,6 +251,57 @@ class SessionManager {
       ageMs:       Date.now() - s.createdAt,
     };
   }
+
+  // ─── Observability & Replay ───────────────────────────────────────────────
+
+  /**
+   * Log an observability event for a session.
+   * @param {string} sessionId
+   * @param {'raw' | 'constraint' | 'pash' | 'snapshot'} level
+   * @param {Object} data
+   */
+  async logEvent(sessionId, level, data) {
+    await this._obsStore.append(sessionId, {
+      ts: Date.now(),
+      level,
+      ...data,
+    });
+  }
+
+  /**
+   * Replay Engine: Reconstructs the UI tree at a specific step.
+   * @param {string} sessionId
+   * @param {number} targetStep
+   * @returns {Promise<Object>}
+   */
+  async replay(sessionId, targetStep) {
+    const logs = await this._obsStore.getLogs(sessionId);
+    if (!logs || logs.length === 0) {
+      return { error: 'No logs found for session', sessionId };
+    }
+
+    // Filter only PASH operations (level: 'pash') to rebuild the tree
+    const pashOps = logs.filter(l => l.level === 'pash' && l.op);
+    const totalSteps = pashOps.length;
+    
+    // Clamp targetStep to valid range
+    const step = Math.max(0, Math.min(targetStep, totalSteps));
+    
+    // Rebuild tree up to `step`
+    const tree = new ComponentTree();
+    for (let i = 0; i < step; i++) {
+      tree.applyOp(pashOps[i].op);
+    }
+
+    const snapshot = tree.snapshot();
+
+    return {
+      snapshot,
+      logs: logs.slice(0, step + 1),
+      step,
+      totalSteps,
+    };
+  }
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -277,4 +334,62 @@ function noopCounter() {
   return { async increment() {} };
 }
 
-module.exports = { SessionManager };
+/**
+ * In-memory observability store for 4-level logging (Raw, Constraint, PASH, Snapshot).
+ * Uses a ring buffer to prevent memory leaks in long-running sessions.
+ */
+function memoryObsStore(maxEntries = 1000) {
+  const store = new Map();
+  return {
+    async append(sessionId, entry) {
+      if (!store.has(sessionId)) store.set(sessionId, []);
+      const logs = store.get(sessionId);
+      logs.push(entry);
+      // Ring buffer: keep only last N entries
+      if (logs.length > maxEntries) logs.shift();
+    },
+    async getLogs(sessionId) {
+      return store.get(sessionId) ?? [];
+    },
+    async clear(sessionId) {
+      store.delete(sessionId);
+    },
+  };
+}
+
+/**
+ * Replay Engine: Reconstructs the UI tree at a specific step.
+ * @param {string} sessionId
+ * @param {number} targetStep - The step index to replay to (0 = initial state)
+ * @returns {{ snapshot: Object, logs: Array, step: number, totalSteps: number }}
+ */
+async function replaySession(sessionId, targetStep, obsStore, snapshotStore) {
+  const logs = await obsStore.getLogs(sessionId);
+  if (!logs || logs.length === 0) {
+    return { error: 'No logs found for session', sessionId };
+  }
+
+  // Filter only PASH operations (level: 'pash') to rebuild the tree
+  const pashOps = logs.filter(l => l.level === 'pash' && l.op);
+  const totalSteps = pashOps.length;
+  
+  // Clamp targetStep to valid range
+  const step = Math.max(0, Math.min(targetStep, totalSteps));
+  
+  // Rebuild tree up to `step`
+  const tree = new (require('./tree').ComponentTree)();
+  for (let i = 0; i < step; i++) {
+    tree.applyOp(pashOps[i].op);
+  }
+
+  const snapshot = tree.snapshot();
+
+  return {
+    snapshot,
+    logs: logs.slice(0, step + 1), // Return logs up to this step
+    step,
+    totalSteps,
+  };
+}
+
+module.exports = { SessionManager, replaySession };

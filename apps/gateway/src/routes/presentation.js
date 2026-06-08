@@ -1,5 +1,7 @@
 'use strict';
 
+const { replaySession } = require('@pash/state-engine');
+
 /**
  * POST /v1/presentation/init
  *
@@ -48,7 +50,7 @@ async function presentationRoute(fastify, opts) {
       },
     },
   }, async (request, reply) => {
-    const { orgId, apiKeyId = 'unknown' } = request.pashContext;
+    const { orgId, apiKeyId = 'unknown', env, governance = {} } = request.pashContext;
     const { schemas = [], webhookUrl, resume } = request.body;
 
     // ── Resume existing session ────────────────────────────────────────────
@@ -77,9 +79,11 @@ async function presentationRoute(fastify, opts) {
     const session = sessionManager.create({
       orgId,
       apiKeyId,
+      env,
       clientSchemas: schemas,
       baseSchemas,
       webhookUrl,
+      governance,
     });
 
     return reply.send({
@@ -105,6 +109,33 @@ async function presentationRoute(fastify, opts) {
 
     const stats = sessionManager.stats(id);
     return reply.send({ snapshot: snap, stats });
+  });
+
+  // ── GET /v1/presentation/replay/:id ─────────────────────────────────────
+  fastify.get('/v1/presentation/replay/:id', {
+    config: { requireAuth: true },
+  }, async (request, reply) => {
+    const { id } = request.params;
+    const targetStep = parseInt(request.query.step || '0', 10);
+
+    // Access the obsStore via sessionManager's internal reference (or expose it)
+    // For now, we'll pass a dummy or we can expose it from sessionManager
+    // Let's add getObsStore to sessionManager or just use sessionManager directly if we update it.
+    // Actually, let's just make sessionManager expose a replay method.
+    
+    const result = await sessionManager.replay(id, targetStep);
+    
+    if (result.error) {
+      return reply.code(404).send({ error: result.error });
+    }
+
+    return reply.send({
+      sessionId: id,
+      step: result.step,
+      totalSteps: result.totalSteps,
+      snapshot: result.snapshot,
+      logs: result.logs,
+    });
   });
 
   // ── DELETE /v1/presentation/session/:id ───────────────────────────────

@@ -25,7 +25,7 @@ class AuthService {
   /**
    * Verify a PASH API key and return org context.
    * @param {string} rawKey - from Authorization: Bearer header
-   * @returns {{ valid, orgId, plan, lineLimit, env } | { valid: false, reason }}
+   * @returns {{ valid, orgId, plan, lineLimit, env, governance } | { valid: false, reason }}
    */
   async verify(rawKey) {
     if (!rawKey || !rawKey.startsWith('pash_')) {
@@ -63,12 +63,18 @@ class AuthService {
         plan:      'free',
         lineLimit: 300_000,
         env:       'test',
+        governance: {
+          maxLines: 1000,
+          allowedComponents: null, // null means all allowed
+          blockedComponents: ['CryptoPaymentForm', 'AdminPanel'],
+        },
+        webhookUrl: 'https://example.com/system-webhook',
       };
     }
 
     try {
       const row = await this._db.query(
-        `SELECT org_id, plan, line_limit, env, status
+        `SELECT org_id, plan, line_limit, env, status, governance
          FROM api_keys
          WHERE key_hash = $1 AND status = 'active'
          LIMIT 1`,
@@ -86,6 +92,8 @@ class AuthService {
         plan:      r.plan,
         lineLimit: r.line_limit,
         env:       r.env,
+        governance: r.governance || {},
+        webhookUrl: r.webhook_url || null, // Systemic webhook URL
       };
     } catch (err) {
       console.error('[Auth] DB lookup failed:', err.message);
