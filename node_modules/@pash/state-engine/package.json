@@ -11,7 +11,8 @@
     "testMatch": ["**/test/**/*.test.js"]
   },
   "dependencies": {
-    "@pash/protocol": "*"
+    "@pash/protocol": "*",
+    "@pash/security": "*"
   },
   "devDependencies": {
     "jest": "^29.0.0"

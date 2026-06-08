@@ -1,6 +1,9 @@
 'use strict';
 
 const crypto = require('crypto');
+const { SecurityPipeline } = require('@pash/security');
+
+const securityPipeline = new SecurityPipeline({ strictMode: true });
 
 /**
  * ComponentTree — the virtual UI state maintained by the gateway per session.
@@ -73,10 +76,16 @@ class ComponentTree {
       return { ok: false, error: `Parent "${parent}" not found` };
     }
 
+    // Security check: inspect all fields for XSS and secrets
+    const safeFields = {};
+    for (const [key, value] of Object.entries(fields || {})) {
+      safeFields[key] = securityPipeline.inspect(value);
+    }
+
     this._nodes.set(id, {
       id,
       component,
-      fields:  { ...fields },
+      fields:  safeFields,
       parent,
       meta:    { ...namedParams },
       seq:     ++this._seq,
@@ -101,8 +110,11 @@ class ComponentTree {
     const node = this._nodes.get(id);
     if (!node) return { ok: false, error: `Element "${id}" not found` };
 
+    // Security check: inspect new value
+    const safeValue = securityPipeline.inspect(value);
+
     const prev = node.fields[field];
-    node.fields[field] = value;
+    node.fields[field] = safeValue;
     node.updatedAt     = Date.now();
 
     return { ok: true, prev };
@@ -138,45 +150,57 @@ class ComponentTree {
   /**
    * Apply a parsed PASH v2 operation directly to the tree.
    * Returns the result plus any !error/!warn lines to emit.
+   * Catches SecurityPipeline violations and formats them as client-facing errors.
    */
   applyOp(op) {
-    switch (op.type) {
-      case '+': {
-        const result = this.mount({
-          id:         op.id,
-          component:  op.component,
-          fields:     op.fields ?? {},
-          parent:     op.parent,
-          namedParams: op.namedParams ?? {},
-        });
-        return {
-          ...result,
-          errorLine: result.ok ? null
-            : `!error|id=${op.id}|component=${op.component}|reason=${result.error}`,
+    try {
+      switch (op.type) {
+        case '+': {
+          const result = this.mount({
+            id:         op.id,
+            component:  op.component,
+            fields:     op.fields ?? {},
+            parent:     op.parent,
+            namedParams: op.namedParams ?? {},
+          });
+          return {
+            ...result,
+            errorLine: result.ok ? null
+              : `!error|id=${op.id}|component=${op.component}|reason=${result.error}`,
+          };
+        }
+
+        case '~': {
+          const result = this.update(op.id, op.field, op.value);
+          return {
+            ...result,
+            errorLine: result.ok ? null
+              : `!error|id=${op.id}|component=unknown|reason=${result.error}`,
+          };
+        }
+
+        case '-': {
+          const result = this.unmount(op.id);
+          return {
+            ...result,
+            warnLine: result.warning
+              ? `!warn|id=${op.id}|reason=${result.warning}`
+              : null,
+          };
+        }
+
+        default:
+          return { ok: true, errorLine: null };
+      }
+    } catch (err) {
+      if (err.message.startsWith('SECURITY_VIOLATION')) {
+        return { 
+          ok: false, 
+          error: 'SECURITY_VIOLATION',
+          errorLine: `!error|id=${op.id}|component=${op.component || 'unknown'}|reason=Security policy violation: ${err.message.replace('SECURITY_VIOLATION: ', '')}`
         };
       }
-
-      case '~': {
-        const result = this.update(op.id, op.field, op.value);
-        return {
-          ...result,
-          errorLine: result.ok ? null
-            : `!error|id=${op.id}|component=unknown|reason=${result.error}`,
-        };
-      }
-
-      case '-': {
-        const result = this.unmount(op.id);
-        return {
-          ...result,
-          warnLine: result.warning
-            ? `!warn|id=${op.id}|reason=${result.warning}`
-            : null,
-        };
-      }
-
-      default:
-        return { ok: true, errorLine: null };
+      throw err; // Re-throw unexpected errors
     }
   }
 
