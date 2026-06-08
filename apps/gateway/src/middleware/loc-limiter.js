@@ -1,24 +1,17 @@
 'use strict';
 
+const { modelRegistry } = require('../services/model-registry');
+
 /**
  * Middleware для управления лимитами Lines of Code (LoC) и Rate Limiting.
  * Реализует формулу: Списано строк = ceil(кол-во символов / 256) * multiplier_модели.
+ * Множители и доступность моделей динамически загружаются из config/models-registry.json.
  * Готов к миграции на Cloudflare Durable Objects (сейчас использует in-memory Map для демонстрации).
  */
 
 // Временное in-memory хранилище (в CF Workers заменить на Durable Objects / KV)
 const userUsageStore = new Map();
 const rateLimitStore = new Map();
-
-const MODEL_MULTIPLIERS = {
-  'minimax-m2.5:free': 1.0,
-  'owl-alpha:free': 1.0,
-  'gpt-4o-mini': 2.5,
-  'claude-3-haiku': 2.5,
-  'gpt-4o': 10.0,
-  'claude-3.5-sonnet': 10.0,
-  'default': 1.0,
-};
 
 const TIER_LIMITS = {
   community: { locLimit: 50000, rpm: 10, rph: 100 },
@@ -31,7 +24,7 @@ const TIER_LIMITS = {
  * 1 PASH LoC = максимум 256 символов.
  */
 function calculateWeightedLoc(charCount, modelName) {
-  const multiplier = MODEL_MULTIPLIERS[modelName] || MODEL_MULTIPLIERS.default;
+  const multiplier = modelRegistry.getMultiplier(modelName);
   const baseLoc = Math.ceil(charCount / 256);
   return Math.ceil(baseLoc * multiplier);
 }
@@ -98,6 +91,14 @@ async function preRequestLocLimit(request, reply) {
   const tier = user.tier || 'community';
   const clientType = request.headers['x-pash-client-type'] || 'browser';
   const modelName = request.body?.model || 'default';
+
+  // Проверяем, разрешена ли модель для текущего тира
+  if (!modelRegistry.isModelAllowedForTier(modelName, tier)) {
+    return reply.code(403).send({
+      error: 'model_not_allowed_for_tier',
+      message: `Model ${modelName} is not available for your current tier (${tier}).`,
+    });
+  }
 
   const rateCheck = checkRateLimit(userId, tier, clientType);
 
@@ -209,5 +210,4 @@ module.exports = {
     rateLimitStore.clear();
   },
   TIER_LIMITS,
-  MODEL_MULTIPLIERS,
 };

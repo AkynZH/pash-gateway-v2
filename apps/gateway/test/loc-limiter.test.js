@@ -4,7 +4,6 @@ const {
   calculateWeightedLoc,
   __resetStore,
   TIER_LIMITS,
-  MODEL_MULTIPLIERS,
 } = require('../src/middleware/loc-limiter');
 
 describe('LOC Limiter', () => {
@@ -15,24 +14,25 @@ describe('LOC Limiter', () => {
   describe('calculateWeightedLoc', () => {
     test('calculates 1 LoC for a normal line under 256 chars', () => {
       const chars = 100;
-      const weighted = calculateWeightedLoc(chars, 'owl-alpha:free');
+      const weighted = calculateWeightedLoc(chars, 'openrouter/owl-alpha:free');
       expect(weighted).toBe(1); // ceil(100/256) * 1.0 = 1
     });
 
     test('calculates weighted LoC for long lines (anti-abuse)', () => {
       // 512 chars on a free model = 2 * 1.0 = 2 LoC
       const charsFree = 512;
-      expect(calculateWeightedLoc(charsFree, 'owl-alpha:free')).toBe(2);
+      expect(calculateWeightedLoc(charsFree, 'openrouter/owl-alpha:free')).toBe(2);
 
-      // 512 chars on a pro model (e.g., gpt-4o) = 2 * 10.0 = 20 LoC
+      // 512 chars on a pro model (e.g., openai/gpt-4o) = 2 * 10.0 = 20 LoC
       const charsPro = 512;
-      expect(calculateWeightedLoc(charsPro, 'gpt-4o')).toBe(20);
+      expect(calculateWeightedLoc(charsPro, 'openai/gpt-4o')).toBe(20);
     });
 
-    test('applies correct multipliers for different models', () => {
-      expect(MODEL_MULTIPLIERS['minimax-m2.5:free']).toBe(1.0);
-      expect(MODEL_MULTIPLIERS['gpt-4o-mini']).toBe(2.5);
-      expect(MODEL_MULTIPLIERS['gpt-4o']).toBe(10.0);
+    test('applies correct multipliers from dynamic registry and falls back for unknown models', () => {
+      // Uses dynamic registry
+      expect(calculateWeightedLoc(256, 'openai/gpt-4o-mini')).toBe(3); // ceil(256/256) * 2.5 = 3 (rounded up from 2.5)
+      expect(calculateWeightedLoc(256, 'openai/gpt-4o')).toBe(10); // ceil(256/256) * 10.0 = 10
+      
       // calculateWeightedLoc falls back to default (1.0) for unknown models
       expect(calculateWeightedLoc(256, 'unknown-model')).toBe(1);
     });
