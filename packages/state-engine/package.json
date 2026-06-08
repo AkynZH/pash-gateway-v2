@@ -1,0 +1,19 @@
+{
+  "name": "@pash/state-engine",
+  "version": "2.0.0",
+  "description": "PASH v2 virtual UI tree, snapshots and cascade operations",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "jest --forceExit"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testMatch": ["**/test/**/*.test.js"]
+  },
+  "dependencies": {
+    "@pash/protocol": "*"
+  },
+  "devDependencies": {
+    "jest": "^29.0.0"
+  }
+}

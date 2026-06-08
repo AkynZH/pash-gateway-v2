@@ -1,0 +1,31 @@
+{
+  "name": "@pash/gateway",
+  "version": "2.0.0",
+  "description": "PASH Gateway — LLM proxy with PASH injection and streaming",
+  "main": "src/server.js",
+  "scripts": {
+    "dev":   "node src/server.js",
+    "start": "NODE_ENV=production node src/server.js",
+    "test":  "jest --forceExit --testTimeout=10000"
+  },
+  "dependencies": {
+    "fastify":          "^4.28.0",
+    "@fastify/cors":    "^9.0.0",
+    "@fastify/rate-limit": "^9.0.0",
+    "ioredis":          "^5.3.0",
+    "pg":               "^8.11.0",
+    "undici":           "^6.0.0",
+    "@pash/protocol":   "*",
+    "@pash/state-engine": "*",
+    "@pash/billing":    "*"
+  },
+  "devDependencies": {
+    "jest":             "^29.0.0",
+    "supertest":        "^6.3.0"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testMatch": ["**/test/**/*.test.js"],
+    "testTimeout": 10000
+  }
+}

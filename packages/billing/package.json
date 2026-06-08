@@ -1,0 +1,8 @@
+{
+  "name": "@pash/billing",
+  "version": "2.0.0",
+  "main": "src/index.js",
+  "scripts": { "test": "jest --forceExit" },
+  "jest": { "testEnvironment": "node", "testMatch": ["**/test/**/*.test.js"] },
+  "devDependencies": { "jest": "^29.0.0" }
+}

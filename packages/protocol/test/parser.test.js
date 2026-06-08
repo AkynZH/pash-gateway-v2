@@ -1,0 +1,147 @@
+'use strict';
+
+const { parseLine, parseStream } = require('../src/parser');
+
+describe('parseLine — MOUNT', () => {
+  test('basic mount without parent', () => {
+    const op = parseLine('+[card1]|ProductCard|Смартфон X1|AMOLED|69990|Купить');
+    expect(op.type).toBe('+');
+    expect(op.id).toBe('card1');
+    expect(op.component).toBe('ProductCard');
+    expect(op.rawFields).toEqual(['Смартфон X1', 'AMOLED', '69990', 'Купить']);
+    expect(op.parent).toBeNull();
+  });
+
+  test('mount with @parent named param', () => {
+    const op = parseLine('+[usr_402]|UserCard|Felix|Lead Dev|@parent=list_panel');
+    expect(op.id).toBe('usr_402');
+    expect(op.parent).toBe('list_panel');
+    expect(op.rawFields).toEqual(['Felix', 'Lead Dev']);
+  });
+
+  test('@parent can be anywhere in the field list', () => {
+    const op = parseLine('+[a]|Hero|Title|@parent=root|Subtitle');
+    expect(op.parent).toBe('root');
+    expect(op.rawFields).toEqual(['Title', 'Subtitle']);
+  });
+
+  test('escaped pipe in field value', () => {
+    const op = parseLine('+[a]|Badge|Fast\\|Reliable|@parent=root');
+    expect(op.rawFields[0]).toBe('Fast|Reliable');
+  });
+
+  test('invalid MOUNT syntax → PARSE_ERROR', () => {
+    const op = parseLine('+no_brackets|Component|field');
+    expect(op.type).toBe('PARSE_ERROR');
+  });
+});
+
+describe('parseLine — UPDATE', () => {
+  test('basic update', () => {
+    const op = parseLine('~[usr_402]|status|Active');
+    expect(op.type).toBe('~');
+    expect(op.id).toBe('usr_402');
+    expect(op.field).toBe('status');
+    expect(op.value).toBe('Active');
+  });
+
+  test('update with empty value', () => {
+    const op = parseLine('~[x]|title|');
+    expect(op.value).toBe('');
+  });
+
+  test('update with pipe in value (escaped)', () => {
+    const op = parseLine('~[x]|desc|Fast\\|Reliable');
+    expect(op.value).toBe('Fast\\|Reliable'); // raw — unescaping is caller's job
+  });
+
+  test('invalid UPDATE → PARSE_ERROR', () => {
+    const op = parseLine('~no_bracket|field|value');
+    expect(op.type).toBe('PARSE_ERROR');
+  });
+});
+
+describe('parseLine — UNMOUNT', () => {
+  test('basic unmount', () => {
+    const op = parseLine('-[list_panel]');
+    expect(op.type).toBe('-');
+    expect(op.id).toBe('list_panel');
+  });
+
+  test('invalid UNMOUNT → PARSE_ERROR', () => {
+    expect(parseLine('-no_bracket').type).toBe('PARSE_ERROR');
+  });
+});
+
+describe('parseLine — ERROR channel', () => {
+  test('!error line', () => {
+    const op = parseLine('!error|id=usr_402|component=UserCard|reason=missing_field_role');
+    expect(op.type).toBe('!');
+    expect(op.level).toBe('error');
+    expect(op.params.id).toBe('usr_402');
+    expect(op.params.reason).toBe('missing_field_role');
+  });
+
+  test('!warn line', () => {
+    const op = parseLine('!warn|id=x|reason=schema_downgrade|dropped_fields=field1,field2');
+    expect(op.level).toBe('warn');
+    expect(op.params.dropped_fields).toBe('field1,field2');
+  });
+});
+
+describe('parseLine — DIRECTIVE', () => {
+  test('@snapshot directive', () => {
+    const op = parseLine('@snapshot|hash=abc123|ts=1700000000000');
+    expect(op.type).toBe('@');
+    expect(op.name).toBe('snapshot');
+    expect(op.params.hash).toBe('abc123');
+  });
+
+  test('@version directive', () => {
+    const op = parseLine('@version|pash=2|schema_version=1.1');
+    expect(op.name).toBe('version');
+    expect(op.params.pash).toBe('2');
+  });
+});
+
+describe('parseStream', () => {
+  test('full stream with version header', () => {
+    const stream = `v:2
++[panel]|HeroPanel|Title|Sub
++[card1]|ProductCard|X1|AMOLED|69990|Купить|@parent=panel
+~[card1]|price|59990
+-[card1]`;
+
+    const { version, ops } = parseStream(stream);
+    expect(version).toBe('2');
+    expect(ops).toHaveLength(4);
+    expect(ops[0].type).toBe('+');
+    expect(ops[1].parent).toBe('panel');
+    expect(ops[2].type).toBe('~');
+    expect(ops[3].type).toBe('-');
+  });
+
+  test('empty lines are skipped', () => {
+    const { ops } = parseStream('v:2\n\n+[a]|X|y\n\n');
+    expect(ops).toHaveLength(1);
+  });
+
+  test('stream without version header', () => {
+    const { version, ops } = parseStream('+[a]|X|y');
+    expect(version).toBeNull();
+    expect(ops).toHaveLength(1);
+  });
+
+  test('schema resolver maps fields to labels', () => {
+    const schema = {
+      fields: [
+        { label: 'title',   type: 'string', required: true },
+        { label: 'price',   type: 'number', format: 'currency' },
+      ],
+    };
+    const resolver = () => schema;
+    const { ops } = parseStream('v:2\n+[c1]|ProductCard|Смартфон|69990', resolver);
+    expect(ops[0].fields.title).toBe('Смартфон');
+    expect(ops[0].fields.price).toBe('69990');
+  });
+});

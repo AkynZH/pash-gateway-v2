@@ -1,0 +1,16 @@
+{
+  "name": "@pash/protocol",
+  "version": "2.0.0",
+  "description": "PASH v2 protocol parser, validator and serializer",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "jest --forceExit"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testMatch": ["**/test/**/*.test.js"]
+  },
+  "devDependencies": {
+    "jest": "^29.0.0"
+  }
+}

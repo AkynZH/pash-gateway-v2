@@ -1,0 +1,29 @@
+FROM node:20-alpine AS base
+WORKDIR /app
+RUN apk add --no-cache curl
+
+# ── Dependencies ───────────────────────────────────────────────────────────────
+FROM base AS deps
+COPY package.json package-lock.json* ./
+COPY packages/protocol/package.json  ./packages/protocol/
+COPY packages/state-engine/package.json ./packages/state-engine/
+COPY packages/billing/package.json   ./packages/billing/
+COPY apps/gateway/package.json       ./apps/gateway/
+RUN npm ci --omit=dev
+
+# ── Source ────────────────────────────────────────────────────────────────────
+FROM deps AS runner
+COPY packages/protocol/src   ./packages/protocol/src
+COPY packages/state-engine/src ./packages/state-engine/src
+COPY packages/billing/src    ./packages/billing/src
+COPY apps/gateway/src        ./apps/gateway/src
+
+# Non-root user
+RUN addgroup -S pash && adduser -S pash -G pash
+USER pash
+
+EXPOSE 3000
+HEALTHCHECK --interval=10s --timeout=5s --retries=5 \
+  CMD curl -f http://localhost:3000/v1/health || exit 1
+
+CMD ["node", "apps/gateway/src/server.js"]
