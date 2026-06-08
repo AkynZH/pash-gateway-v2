@@ -13,6 +13,8 @@ const completionsRoute         = require('./routes/completions');
 const presentationRoute        = require('./routes/presentation');
 const healthRoute              = require('./routes/health');
 const schemasRoute             = require('./routes/schemas');
+const metricsRoute             = require('./routes/metrics');
+const { metrics: obsMetrics }  = require('@pash/observability');
 
 const startedAt = Date.now();
 
@@ -119,6 +121,25 @@ async function buildApp(db = null) {
   await app.register(healthRoute,       routeOpts);
   await app.register(completionsRoute,  routeOpts);
   await app.register(presentationRoute, routeOpts);
+  await app.register(metricsRoute,      routeOpts);
+
+  // ── Observability: Track request duration ─────────────────────────────────
+  app.addHook('onRequest', (request, reply, done) => {
+    request.pashStartTime = process.hrtime();
+    done();
+  });
+
+  app.addHook('onResponse', (request, reply, done) => {
+    if (request.pashStartTime) {
+      const diff = process.hrtime(request.pashStartTime);
+      const duration = diff[0] + diff[1] / 1e9;
+      obsMetrics.pashRequestDuration.observe(
+        { route: request.routerPath, method: request.method, status: reply.statusCode },
+        duration
+      );
+    }
+    done();
+  });
 
   // ── Graceful shutdown ──────────────────────────────────────────────────────
   const shutdown = async (signal) => {

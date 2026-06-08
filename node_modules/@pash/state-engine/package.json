@@ -12,7 +12,8 @@
   },
   "dependencies": {
     "@pash/protocol": "*",
-    "@pash/security": "*"
+    "@pash/security": "*",
+    "@pash/observability": "*"
   },
   "devDependencies": {
     "jest": "^29.0.0"

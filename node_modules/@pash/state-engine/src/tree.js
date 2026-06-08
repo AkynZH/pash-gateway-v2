@@ -2,6 +2,7 @@
 
 const crypto = require('crypto');
 const { SecurityPipeline } = require('@pash/security');
+const { metrics: obsMetrics } = require('@pash/observability');
 
 const securityPipeline = new SecurityPipeline({ strictMode: true });
 
@@ -163,6 +164,7 @@ class ComponentTree {
             parent:     op.parent,
             namedParams: op.namedParams ?? {},
           });
+          if (result.ok) obsMetrics.pashOpsTotal.inc({ operation: 'mount', component: op.component });
           return {
             ...result,
             errorLine: result.ok ? null
@@ -172,6 +174,7 @@ class ComponentTree {
 
         case '~': {
           const result = this.update(op.id, op.field, op.value);
+          if (result.ok) obsMetrics.pashOpsTotal.inc({ operation: 'update', component: 'unknown' });
           return {
             ...result,
             errorLine: result.ok ? null
@@ -181,6 +184,7 @@ class ComponentTree {
 
         case '-': {
           const result = this.unmount(op.id);
+          obsMetrics.pashOpsTotal.inc({ operation: 'unmount', component: 'unknown' });
           return {
             ...result,
             warnLine: result.warning
@@ -194,6 +198,8 @@ class ComponentTree {
       }
     } catch (err) {
       if (err.message.startsWith('SECURITY_VIOLATION')) {
+        const reason = err.message.includes('XSS') ? 'xss' : 'secrets';
+        obsMetrics.pashSecurityBlocksTotal.inc({ reason });
         return { 
           ok: false, 
           error: 'SECURITY_VIOLATION',
